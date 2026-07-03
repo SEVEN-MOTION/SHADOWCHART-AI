@@ -1,0 +1,6 @@
+node_modules/
+.env
+market-analysis-chart.png
+test-results/
+playwright-report/
+.pytest_cache/
