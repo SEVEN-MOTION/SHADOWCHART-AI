@@ -7,3 +7,8 @@ history/
 history/
 Production
 Production
+.env
+
+# ShadowChart Visual Buffers
+tests/chart-capture.jpg
+Visual
