@@ -1,131 +1,140 @@
 import { test } from "@playwright/test";
-import { chromium } from "playwright-extra";
-import stealthPlugin from "puppeteer-extra-plugin-stealth";
-import { GoogleGenAI } from "@google/genai";
-import * as fsMod from "fs";
-import * as path from "path";
-import axios from "axios";
 import http from "http";
+import fs from "fs";
+import path from "path";
+import crypto from "crypto";
+import https from "https";
+import { GoogleGenAI } from "@google/genai";
 
-chromium.use(stealthPlugin());
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
-function fileToGenerativePart(path, mimeType) { 
-  return { inlineData: { data: fsMod.readFileSync(path).toString("base64"), mimeType } };
-}
+function fireBinanceOrder(symbol: string, side: "BUY" | "SELL", quantity: number) {
+    const apiKey = process.env.BINANCE_API_KEY || "MOCK_KEY";
+    const secretKey = process.env.BINANCE_SECRET_KEY || "MOCK_SECRET";
+    const baseUrl = "testnet.binance.vision";
+    
+    const timestamp = Date.now() - 1000;
+    const recvWindow = 60000;
+    
+    const queryString = `symbol=${symbol}&side=${side}&type=MARKET&quantity=${quantity}&recvWindow=${recvWindow}&timestamp=${timestamp}`;
+    const signature = crypto.createHmac("sha256", secretKey).update(queryString).digest("hex");
+    
+    console.log(`\n🛡️ [BINANCE ENGINE] Dispatching Insulated Market Order (${side})...`);
+    
+    const options = {
+        hostname: baseUrl,
+        path: `/api/v3/order?${queryString}&signature=${signature}`,
+        method: "POST",
+        headers: {
+            "X-MBX-APIKEY": apiKey,
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+    };
 
-async function dispatchWebhook(reportText) {
-  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-  if (!webhookUrl) return;
-  try {
-    await axios.post(webhookUrl, {
-      content: "📊 **NEW QUANT MODEL EXECUTION REPORT GENERATED**",
-      embeds: [{
-        title: "⚡ SHADOWCHART-AI RUN COMPLETED",
-        description: reportText,
-        color: 0x131722
-      }]
+    const req = https.request(options, (res) => {
+        let body = "";
+        res.on("data", (chunk) => body += chunk);
+        res.on("end", () => {
+            console.log(`📡 [EXCHANGE RESPONSE (${res.statusCode})]: ${body}`);
+        });
     });
-    console.log("📡 [Webhook] Live institutional alert dispatched successfully!");
-  } catch (err) {
-    console.error("❌ [Webhook] Dispatch operational failure:", err.message);
-  }
+    req.on("error", (e) => console.error("❌ Net Error: " + e.message));
+    req.end();
 }
 
-function logToHistoricalDatabase(reportText) {
-  const logDir = "./history";
-  const logPath = path.join(logDir, "logs.json");
-  if (!fsMod.existsSync(logDir)) fsMod.mkdirSync(logDir);
-  const currentLogs = fsMod.existsSync(logPath) ? JSON.parse(fsMod.readFileSync(logPath, "utf-8")) : [];
-  currentLogs.push({ timestamp: new Date().toISOString(), evaluation: reportText });
-  fsMod.writeFileSync(logPath, JSON.stringify(currentLogs, null, 2));
-  console.log("💾 [Database] Structural log snapshot committed to history/logs.json");
-}
+test("ShadowChart AI -> Visual Analysis Trading Loop", async ({ page }) => {
+    test.setTimeout(180000); // Expanded timeout to accommodate rate-limit cooldown retries
+    
+    // Narrow font filtering to keep local server traffic completely pure
+    await page.route((url) => {
+        const target = url.toString().toLowerCase();
+        return target.includes("font") || target.endsWith(".woff") || target.endsWith(".woff2");
+    }, (route) => route.abort());
+    
+    const server = http.createServer((req, res) => {
+        fs.readFile(path.join(__dirname, "../chart-buffer.html"), (err, data) => {
+            res.writeHead(200, { "Content-Type": "text/html" });
+            res.end(data || "<html></html>");
+        });
+    });
+    server.listen(8080, "127.0.0.1");
 
-test("ShadowChart AI -> Production MultiModal Loop", async () => {
-  test.setTimeout(240000); 
-  if (!process.env.GEMINI_API_KEY) throw new Error("Missing GEMINI_API_KEY");
+    console.log("\n=================== INITIALIZING VISUAL ENGINE RUN ===================");
+    
+    // Downscaled viewport slightly to optimize token footprint while keeping full chart crispness
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto("http://127.0.0.1:8080?symbol=BTCUSDT", { waitUntil: "commit" });
+    
+    console.log("⏳ Allowing chart canvas layouts to populate frames...");
+    await page.waitForTimeout(15000);
 
-  const server = http.createServer((req, res) => {
+    const screenshotPath = path.join(__dirname, "chart-capture.jpg");
+    
+    console.log("📸 Ripping raw hardware frame buffer via CDP Session...");
+    const cdpSession = await page.context().newCDPSession(page);
+    const { data } = await cdpSession.send("Page.captureScreenshot", {
+        format: "jpeg",
+        quality: 80
+    });
+    
+    fs.writeFileSync(screenshotPath, Buffer.from(data, "base64"));
+    console.log("📸 Frame saved to disk: " + screenshotPath);
+
+    const imageBuffer = fs.readFileSync(screenshotPath);
+    const base64Image = imageBuffer.toString("base64");
+
+    const promptText = "Analyze this split technical chart (Top: 4H, Bottom: 1H). Look closely at the candles, moving averages, and RSI indicators. Determine whether a clear BUY or SELL action is warranted. You must output your decision strictly in JSON format matching this exact schema: {\"action\": \"BUY\" | \"SELL\" | \"HOLD\", \"reason\": \"your explanation here\"}";
+
+    let decisionStr = "";
     try {
-      const targetPath = path.resolve("chart-buffer.html");
-      if (fsMod.existsSync(targetPath)) {
-        res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(fsMod.readFileSync(targetPath));
-      } else {
-        res.writeHead(404);
-        res.end("Buffer file missing");
-      }
-    } catch (e) {
-      res.writeHead(500);
-      res.end();
+        console.log("🧠 Dispatching image to Gemini 2.0 Flash for market evaluation...");
+        let response = await ai.models.generateContent({
+            model: "gemini-2.0-flash",
+            contents: [{ inlineData: { data: base64Image, mimeType: "image/jpeg" } }, promptText],
+            config: { responseMimeType: "application/json" }
+        });
+        decisionStr = response.text;
+    } catch (error: any) {
+        if (error.message && error.message.includes("429")) {
+            console.warn("\n⚠️ Hit Gemini Free-Tier Rate Limit. Initiating 30s pipeline cooldown loop...");
+            await page.waitForTimeout(30000);
+            
+            try {
+                console.log("🔄 Retrying Gemini market evaluation...");
+                let response = await ai.models.generateContent({
+                    model: "gemini-2.0-flash",
+                    contents: [{ inlineData: { data: base64Image, mimeType: "image/jpeg" } }, promptText],
+                    config: { responseMimeType: "application/json" }
+                });
+                decisionStr = response.text;
+            } catch (retryError: any) {
+                console.error("❌ Cooldown retry exhausted: " + retryError.message);
+            }
+        } else {
+            console.error("❌ Visual processing exception: " + error.message);
+        }
     }
-  });
 
-  server.listen(8080, "127.0.0.1");
+    // Processing Phase
+    if (decisionStr) {
+        try {
+            console.log("\n📊 [AI DECISION RECEIVED]: " + decisionStr);
+            const decision = JSON.parse(decisionStr.trim());
 
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }); 
-  const browser = await chromium.launch({ 
-    headless: true,
-    args: [
-      "--no-sandbox", 
-      "--disable-setuid-sandbox", 
-      "--disable-web-security",
-      "--disable-gpu",
-      "--use-gl=swiftshader",
-      "--disable-software-rasterizer",
-      "--disable-font-subpixel-positioning"
-    ] 
-  });
-  const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
-  const page = await context.newPage();
-  const chartPath = "market-analysis-chart.png";
-
-  try {
-    console.log("🚀 [1/4] Spawning internal HTTP server and charting engine...");
-    await page.goto("http://127.0.0.1:8080", { waitUntil: "commit", timeout: 60000 });
-
-    console.log("⏳ [2/4] Syncing layout elements and stabilizing chart widgets...");
-    await page.waitForTimeout(30000);
-
-    console.log("📸 [3/4] Capturing pristine technical layout surface...");
-    // Upgraded timeout safety parameter here explicitly
-    await page.screenshot({ path: chartPath, timeout: 45000 });
-
-    console.log("🧠 [4/4] Sending payload to Gemini for evaluation...");
-    const imgPart = fileToGenerativePart(chartPath, "image/png");
+            if (decision.action === "BUY" || decision.action === "SELL") {
+                fireBinanceOrder("BTCUSDT", decision.action, 0.005);
+            } else {
+                console.log("⏸️ Market criteria not met. Position set to HOLD.");
+            }
+        } catch (jsonErr) {
+            console.warn("⚠️ Output parsing failed, running insulation default execution.");
+            fireBinanceOrder("BTCUSDT", "BUY", 0.005);
+        }
+    } else {
+        console.warn("\n⚠️ API unavailable or blocked. Executing insulated asset hedge trade...");
+        fireBinanceOrder("BTCUSDT", "BUY", 0.005);
+    }
     
-    const prompt = `Act as an elite Managing Director of Quantitative Trading and Multi-Strategy Macro Research. Analyze the provided chart screenshot with absolute mathematical and structural rigidity. Strip away all retail fluff. Output the evaluation using the exact schema defined below. Do not add intro or wrap-up chit-chat.
-
-## 📊 MARKET STRUCTURAL DATA & DELTA METRICS
-| Metric | Real-Time Technical Value / Observation |
-| :--- | :--- |
-| **Asset / Ticker Pair** | [Extract Ticker from screen data] |
-| **Current Print Price** | [Extract exact current price visible on screen] |
-| **Volume Point of Control (POC)** | [Extract horizontal peak volume tier value] |
-| **Delta POC & Structural Walls** | [Identify price range showcasing dominant aggressive absorption or high imbalance] |
-| **CVD Momentum Bias** | [Evaluate if Cumulative Volume Delta indicates aggressive buying dominance or selling fatigue] |
-| **RSI Momentum Phase** | [State exact numeric value and matrix quadrant] |
-
----
-
-## ⚡ RIGID EXECUTABLE TRADING BANDS
-* **Trigger Event:** High-volume breakout verification.
-* **Optimal Execution Entry:** Target Zone.
-* **Stop-Loss Invalidation Line:** Critical Invalidations.
-* **Mathematical Risk-Reward Ratio (R:R):** Calculated Value.`;
-    
-    const res = await ai.models.generateContent({ model: "gemini-2.5-flash", contents: [prompt, imgPart] });
-    const outputText = res.text;
-    
-    console.log("\n\n==================== REPORT ====================\n" + outputText + "\n========================================\n");
-    
-    logToHistoricalDatabase(outputText);
-    await dispatchWebhook(outputText);
-
-  } catch (err) { 
-    console.error("❌ Operational Failure:", err); 
-  } finally { 
-    await browser.close();
+    await page.waitForTimeout(5000);
     server.close();
-  }
 });
