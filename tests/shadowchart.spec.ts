@@ -7,6 +7,25 @@ import https from "https";
 import { GoogleGenAI } from "@google/genai";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+const STATE_FILE = path.join(__dirname, "../position.json");
+
+// Helper: Initialize or read local state tracking
+function getLocalPosition(): { position: "NONE" | "LONG" | "SHORT" } {
+    if (!fs.existsSync(STATE_FILE)) {
+        fs.writeFileSync(STATE_FILE, JSON.stringify({ position: "NONE" }));
+        return { position: "NONE" };
+    }
+    try {
+        return JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+    } catch {
+        return { position: "NONE" };
+    }
+}
+
+function updateLocalPosition(newPosition: "NONE" | "LONG" | "SHORT") {
+    fs.writeFileSync(STATE_FILE, JSON.stringify({ position: newPosition }, null, 2));
+    console.log(`💾 [STATE MATRIX]: Local position state updated to -> ${newPosition}`);
+}
 
 function fireBinanceOrder(symbol: string, side: "BUY" | "SELL", quantity: number) {
     const apiKey = process.env.BINANCE_API_KEY || "MOCK_KEY";
@@ -35,7 +54,7 @@ function fireBinanceOrder(symbol: string, side: "BUY" | "SELL", quantity: number
         let body = "";
         res.on("data", (chunk) => body += chunk);
         res.on("end", () => {
-            console.log(`📡 [EXCHANGE RESPONSE (${res.statusCode})]: ${body}`);
+            console.log(`00000000 [EXCHANGE RESPONSE (${res.statusCode})]: ${body}`);
         });
     });
     req.on("error", (e) => console.error("❌ Net Error: " + e.message));
@@ -43,9 +62,12 @@ function fireBinanceOrder(symbol: string, side: "BUY" | "SELL", quantity: number
 }
 
 test("ShadowChart AI -> Visual Analysis Trading Loop", async ({ page }) => {
-    test.setTimeout(180000); // Expanded timeout to accommodate rate-limit cooldown retries
+    test.setTimeout(180000);
     
-    // Narrow font filtering to keep local server traffic completely pure
+    // Read active tracking states
+    const currentState = getLocalPosition();
+    console.log(`\n🔍 [PRE-FLIGHT STATE]: Active market exposure status: ${currentState.position}`);
+
     await page.route((url) => {
         const target = url.toString().toLowerCase();
         return target.includes("font") || target.endsWith(".woff") || target.endsWith(".woff2");
@@ -59,10 +81,10 @@ test("ShadowChart AI -> Visual Analysis Trading Loop", async ({ page }) => {
     });
     server.listen(8080, "127.0.0.1");
 
-    console.log("\n=================== INITIALIZING VISUAL ENGINE RUN ===================");
+    console.log("\n=================== INITIALIZING PERFECTED VISUAL ENGINE RUN ===================");
     
-    // Downscaled viewport slightly to optimize token footprint while keeping full chart crispness
-    await page.setViewportSize({ width: 1280, height: 720 });
+    // Token Optimization: Downscale viewport size layout slightly to drop resolution footprint
+    await page.setViewportSize({ width: 1152, height: 648 });
     await page.goto("http://127.0.0.1:8080?symbol=BTCUSDT", { waitUntil: "commit" });
     
     console.log("⏳ Allowing chart canvas layouts to populate frames...");
@@ -70,69 +92,91 @@ test("ShadowChart AI -> Visual Analysis Trading Loop", async ({ page }) => {
 
     const screenshotPath = path.join(__dirname, "chart-capture.jpg");
     
-    console.log("📸 Ripping raw hardware frame buffer via CDP Session...");
+    console.log("📸 Ripping highly-compressed raw surface buffer via CDP Session...");
     const cdpSession = await page.context().newCDPSession(page);
+    
+    // Token Optimization: Quality dropped to 65 to reduce payload size while keeping vectors perfectly legible
     const { data } = await cdpSession.send("Page.captureScreenshot", {
         format: "jpeg",
-        quality: 80
+        quality: 65
     });
     
     fs.writeFileSync(screenshotPath, Buffer.from(data, "base64"));
-    console.log("📸 Frame saved to disk: " + screenshotPath);
+    console.log("📸 Compact frame saved to disk: " + screenshotPath);
 
     const imageBuffer = fs.readFileSync(screenshotPath);
     const base64Image = imageBuffer.toString("base64");
 
-    const promptText = "Analyze this split technical chart (Top: 4H, Bottom: 1H). Look closely at the candles, moving averages, and RSI indicators. Determine whether a clear BUY or SELL action is warranted. You must output your decision strictly in JSON format matching this exact schema: {\"action\": \"BUY\" | \"SELL\" | \"HOLD\", \"reason\": \"your explanation here\"}";
+    // Vision Prompt Engineering Matrix
+    const technicalPrompt = `You are an elite quantitative technical analysis system. Analyze this multi-timeframe chart.
+Top Panel: 4-Hour Macro Trend. Bottom Panel: 1-Hour Execution Window.
+
+Strictly execute your logic using this evaluation framework:
+1. TREND ALIGNMENT: Check the relationship of the price candles relative to the Moving Averages.
+2. MOMENTUM INDICATORS: Evaluate the RSI patterns. Identify any hidden bullish or bearish divergence across the panels.
+3. CANDLESTICK STRUCTURE: Look for exhaustive patterns at key support or resistance zones (e.g., engulfing, hammers, pin bars).
+
+Cross-examine these findings against our current state criteria:
+Current Market Position State: ${currentState.position}
+
+Trading Rules:
+- If current position is 'NONE' and technicals confirm strong upside entry, output action: "BUY".
+- If current position is 'LONG' and technicals show bearish exhaustion, resistance rejection, or profit targets hit, output action: "SELL" (to clear the long position).
+- If current position is 'LONG' and trend is still healthy up, output action: "HOLD".
+- If setup is choppy, unclear, or conflicting across timeframes, output action: "HOLD".
+
+Output your evaluation strictly inside a single minified JSON object matching this schema:
+{"action": "BUY" | "SELL" | "HOLD", "reason": "Concise, metrics-focused rationalized summary sentence"}
+Do not wrap your output in markdown code blocks (\`\`\`). Output pure raw JSON text only.`;
 
     let decisionStr = "";
     try {
-        console.log("🧠 Dispatching image to Gemini 2.0 Flash for market evaluation...");
+        console.log("🧠 Dispatching image to Gemini 2.0 Flash for optimized visual analysis...");
         let response = await ai.models.generateContent({
             model: "gemini-2.0-flash",
-            contents: [{ inlineData: { data: base64Image, mimeType: "image/jpeg" } }, promptText],
+            contents: [{ inlineData: { data: base64Image, mimeType: "image/jpeg" } }, technicalPrompt],
             config: { responseMimeType: "application/json" }
         });
         decisionStr = response.text;
     } catch (error: any) {
         if (error.message && error.message.includes("429")) {
-            console.warn("\n⚠️ Hit Gemini Free-Tier Rate Limit. Initiating 30s pipeline cooldown loop...");
+            console.warn("\n⚠️ Rate Limit encountered. Engaging 30s cooldown retrier...");
             await page.waitForTimeout(30000);
-            
             try {
-                console.log("🔄 Retrying Gemini market evaluation...");
                 let response = await ai.models.generateContent({
                     model: "gemini-2.0-flash",
-                    contents: [{ inlineData: { data: base64Image, mimeType: "image/jpeg" } }, promptText],
+                    contents: [{ inlineData: { data: base64Image, mimeType: "image/jpeg" } }, technicalPrompt],
                     config: { responseMimeType: "application/json" }
                 });
                 decisionStr = response.text;
             } catch (retryError: any) {
-                console.error("❌ Cooldown retry exhausted: " + retryError.message);
+                console.error("❌ Retry capacity exhausted: " + retryError.message);
             }
         } else {
-            console.error("❌ Visual processing exception: " + error.message);
+            console.error("❌ Processing block fault: " + error.message);
         }
     }
 
-    // Processing Phase
+    // State Execution Processing Phase
     if (decisionStr) {
         try {
-            console.log("\n📊 [AI DECISION RECEIVED]: " + decisionStr);
+            console.log("\n📊 [AI ANALYSIS CRITERIA MATRIX]: " + decisionStr);
             const decision = JSON.parse(decisionStr.trim());
 
-            if (decision.action === "BUY" || decision.action === "SELL") {
-                fireBinanceOrder("BTCUSDT", decision.action, 0.005);
+            if (decision.action === "BUY" && currentState.position === "NONE") {
+                fireBinanceOrder("BTCUSDT", "BUY", 0.005);
+                updateLocalPosition("LONG");
+            } else if (decision.action === "SELL" && currentState.position === "LONG") {
+                fireBinanceOrder("BTCUSDT", "SELL", 0.005);
+                updateLocalPosition("NONE");
             } else {
-                console.log("⏸️ Market criteria not met. Position set to HOLD.");
+                console.log(`⏸️ Order criteria skipped. AI recommended [${decision.action}] but State status is [${currentState.position}]. No order fired.`);
             }
         } catch (jsonErr) {
-            console.warn("⚠️ Output parsing failed, running insulation default execution.");
-            fireBinanceOrder("BTCUSDT", "BUY", 0.005);
+            console.warn("⚠️ JSON syntax parsing anomaly. Halting loop to prevent capital exposure.");
         }
     } else {
-        console.warn("\n⚠️ API unavailable or blocked. Executing insulated asset hedge trade...");
-        fireBinanceOrder("BTCUSDT", "BUY", 0.005);
+        console.warn("\n⚠️ Engine vision channels offline. Position guarded.");
     }
     
     await page.waitForTimeout(5000);
