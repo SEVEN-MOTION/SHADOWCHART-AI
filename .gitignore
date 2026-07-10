@@ -12,3 +12,16 @@ Production
 # ShadowChart Visual Buffers
 tests/chart-capture.jpg
 Visual
+# Local Environment Secrets
+.env
+.env.local
+
+# Local Position Tracking Matrix
+position.json
+
+# Engine Artifacts & Debug captures
+tests/chart-capture.jpg
+test-results/
+playwright-report/
+blob-report/
+/tmp/b64.txt
